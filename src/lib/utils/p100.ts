@@ -787,11 +787,10 @@ export default class P100 implements TpLinkAccessory {
         .then((res: AxiosResponse) => {
           if (res.data.error_code) {
             if (res.data.error_code === "9999" || (res.data.error_code === 9999 && this._reconnect_counter <= 3)) {
-              //@ts-ignore
               this.log.error(" Error Code: " + res.data.error_code + ", " + this.ERROR_CODES[res.data.error_code]);
               this.log.debug("Trying to reconnect...");
               return this.reconnect().then(() => {
-                return this.getDeviceInfo();
+                return this.handleRequest(payload);
               });
             }
             this._reconnect_counter = 0;
@@ -811,6 +810,16 @@ export default class P100 implements TpLinkAccessory {
           }
         })
         .catch((error: Error) => {
+          this.log.debug("handleRequest error: " + error.message);
+          if (error.message && error.message.indexOf("403") > -1) {
+            this.log.debug("Got 403 error, attempting re-authentication");
+            return this.reAuthenticate().then(() => {
+              return this.handleRequest(payload);
+            }).catch((reAuthError) => {
+              this.log.error("Re-authentication failed, cannot retry request");
+              return this.handleError(error.message, "656");
+            });
+          }
           return this.handleError(error.message, "656");
         });
     }
@@ -852,27 +861,19 @@ export default class P100 implements TpLinkAccessory {
     });
   }
 
-  private reAuthenticate(): void {
-    this.log.debug("Reauthenticating");
-    if (this.is_klap) {
-      this.handshake_new()
-        .then(() => {
-          this.log.info("KLAP Authenticated successfully");
-        })
-        .catch(() => {
-          this.log.error("KLAP Handshake New failed");
-          this.is_klap = false;
-        });
-    } else {
-      this.handshake().then(() => {
-        this.login()
-          .then(() => {
-            this.log.info("Authenticated successfully");
-          })
-          .catch(() => {
-            this.log.error("Login failed");
-          });
-      });
+  private async reAuthenticate(): Promise<void> {
+    this.log.debug("Attempting re-authentication after 403 error");
+    try {
+      await this.handshake();
+      if (this.is_klap) {
+        await this.handshake_new();
+      } else {
+        await this.login();
+      }
+      this.log.debug("Re-authentication successful");
+    } catch (error) {
+      this.log.error("Re-authentication failed: " + error);
+      throw error;
     }
   }
 }
